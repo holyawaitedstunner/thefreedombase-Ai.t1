@@ -1,4 +1,4 @@
-a dashboa# Anti-Gravity Project Nexus
+# Anti-Gravity Project Nexus
 
 ## Sovereign AI Co-CEO System
 
