@@ -1,26 +1,9 @@
-# Anti-Gravity Co-CEO — Python Dependencies
-# Install with: pip install --target="/Volumes/PortableSSD/Project_Nexus/libs" -r requirements.txt
-
-# Core API
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-starlette>=0.40.0
-
-# Data Models
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-
-# LLM Inference (Metal GPU for Apple Silicon)
-llama-cpp-python>=0.3.0
-
-# Memory Systems
-chromadb>=1.0.0
-
-# Agent Framework
-langchain-core>=0.3.0
-langchain-community>=0.4.0
-langchain-text-splitters>=0.3.0
-
-# Utilities
-python-dotenv>=1.0.0
-httpx>=0.27.0
+fastapi
+uvicorn
+pydantic
+llama-cpp-python
+chromadb
+langchain-core
+langchain-community
+sqlite3
+python-dotenv
