@@ -2,18 +2,15 @@ import os
 import sys
 
 # --- Anti-Gravity SSD Library Injection ---
+# We force the backend to look at the 1TB SSD for heavy dependencies (ChromaDB, FastAPI, etc.)
+# This must happen before any other imports.
 SSD_LIB_PATH = "/Volumes/PortableSSD/Project_Nexus/libs"
 if os.path.exists(SSD_LIB_PATH):
     sys.path.insert(0, SSD_LIB_PATH)
 
 import sqlite3
-import subprocess
-import re
-from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from llama_cpp import Llama
+
 import chromadb
 
 # --- Configuration ---
@@ -147,57 +144,15 @@ class ChatResponse(BaseModel):
     actions: List[ActionInfo]
     status: str
 
-# --- Agentic Intelligence (Phase 4: Multi-Agent OS) ---
-class Agent:
-    def __init__(self, name: str, system_prompt: str, tools: List[str]):
-        self.name = name
-        self.system_prompt = system_prompt
-        self.tools = tools
-
-EXECUTOR_PROMPT = """You are the EXECUTOR AGENT. Your purpose is to carry out system-level tasks.
-You use <execute>, <read_file>, <write_file>, and <list_dir> to interact with the environment.
-Analyze the CEO's directive and execute the required shell commands or file operations.
-Be precise. Report success or failure clearly."""
-
-RESEARCHER_PROMPT = """You are the RESEARCHER AGENT. Your purpose is to analyze the codebase and local data.
-You use <read_file> and <list_dir> to explore the workspace and find information.
-Do not make changes to the system. Provide detailed insights and context to the Co-CEO."""
-
-CODER_PROMPT = """You are the CODER AGENT. Your purpose is to generate high-quality code.
-You use <write_file> and <read_file> to build systems.
-Follow the architecture defined by the Co-CEO. Ensure documentation is included."""
-
-agents = {
-    "Executor": Agent("Executor", EXECUTOR_PROMPT, ["execute", "read_file", "write_file", "list_dir"]),
-    "Researcher": Agent("Researcher", RESEARCHER_PROMPT, ["read_file", "list_dir"]),
-    "Coder": Agent("Coder", CODER_PROMPT, ["write_file", "read_file"])
-}
-
-class Orchestrator:
-    @staticmethod
-    def plan_task(goal: str, llm: Llama) -> List[str]:
-        prompt = f"CEO GOAL: {goal}\n\nTask: Break this goal into a step-by-step technical plan for a Multi-Agent system.\nOnly output the steps, one per line."
-        completion = llm.create_chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=512
-        )
-        plan = completion["choices"][0]["message"]["content"].strip().split("\n")
-        return [p.strip() for p in plan if p.strip()]
-
 # --- Endpoints ---
 
 @app.get("/api/status")
 async def get_status():
     return {
         "status": "Online",
-        "model": "Dolphin-2.9-Llama3-8B (Local, Metal GPU)",
-        "model_loaded": llama_model is not None,
-        "model_file_exists": os.path.exists(MODEL_PATH),
-        "ssd_connected": os.path.exists("/Volumes/PortableSSD/Project_Nexus"),
-        "ssd_path": "/Volumes/PortableSSD/Project_Nexus",
+        "model": "GPT-4o (Local Emulation via Llama-3)",
         "memory_db": DB_PATH,
-        "vector_db": CHROMA_PATH,
-        "agents": [{"name": a.name, "description": "Active", "tools": a.tools} for a in agents.values()]
+        "is_model_loaded": llama_model is not None
     }
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -209,38 +164,43 @@ async def chat_command(req: ChatRequest):
     c.execute("INSERT INTO messages (role, content, project_scope) VALUES (?, ?, ?)", 
               ("user", req.message, req.project_scope))
     
-    # Retrieve History & Context
+    # Retrieve Short-term Context (SQLite)
     c.execute("SELECT role, content FROM messages WHERE project_scope=? ORDER BY timestamp DESC LIMIT 10", (req.project_scope,))
-    history = [dict(role=r, content=co) for r, co in reversed(c.fetchall())]
+    history = c.fetchall()
     
+    # Retrieve Long-term Context (ChromaDB Vector Search)
+    # We search the vector store for documents similar to the current message
     try:
-        results = memory_collection.query(query_texts=[req.message], n_results=5)
+        results = memory_collection.query(
+            query_texts=[req.message],
+            n_results=5
+        )
         vector_context = "\n".join(results['documents'][0]) if results['documents'] else ""
-    except Exception:
-        vector_context = "[Warning: Vector Recall Offline]"
+    except Exception as e:
+        vector_context = f"[Warning: Vector Memory Retrieval Failed: {str(e)}]"
 
-    llm = get_model()
-    if not llm:
-        return {"response": "Error: Drive Disconnected.", "status": "error"}
-
-    # --- Agentic Orchestration Phase ---
-    # We analyze if the task requires multi-step planning
-    plan = Orchestrator.plan_task(req.message, llm)
-    
+    # Reconstruct ChatML / Llama-3 Instruct Format
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": f"RECORDER CONTEXT:\n{vector_context}"},
-        {"role": "system", "content": f"CURRENT PLAN:\n" + "\n".join(plan)}
+        {"role": "system", "content": f"RECORDER CONTEXT (RELEVANT MEMORIES):\n{vector_context}"}
     ]
-    messages.extend(history)
+    # We load history in reverse (oldest first up to last 10)
+    for role, content in reversed(history):
+        messages.append({"role": role, "content": content})
+        
     messages.append({"role": "user", "content": req.message})
 
-    actions_taken = []
-    final_reply = ""
-    
     try:
-        max_turns = 10 # Higher for multi-agent loops
+        # Get the Engine
+        llm = get_model()
+        if not llm:
+             return {"response": "Error: Core intelligence model not found on external SSD. Please ensure the drive is connected.", "status": "error"}
+
+        # --- Inference Loop (Handles Tool Calls) ---
+        max_turns = 3
         current_turn = 0
+        final_reply = ""
+        actions_taken = []
         
         while current_turn < max_turns:
             completion = llm.create_chat_completion(
@@ -253,39 +213,43 @@ async def chat_command(req: ChatRequest):
             raw_reply = completion["choices"][0]["message"]["content"].strip()
             messages.append({"role": "assistant", "content": raw_reply})
             
+            # Simple Parser for Tool Calls
             tool_executed = False
             
-            # Action Parser
+            # Check for <execute>
             exec_match = re.search(r"<execute>(.*?)</execute>", raw_reply, re.DOTALL)
             if exec_match:
                 cmd = exec_match.group(1).strip()
                 result = SystemController.execute(cmd)
-                messages.append({"role": "system", "content": f"ACTION OUTPUT:\n{result}"})
+                messages.append({"role": "system", "content": f"Action: execute\nCommand: {cmd}\nOutput:\n{result}"})
                 actions_taken.append(ActionInfo(tool="execute", input=cmd, output=result))
                 tool_executed = True
                 
+            # Check for <read_file>
             read_match = re.search(r"<read_file>(.*?)</read_file>", raw_reply, re.DOTALL)
             if read_match:
                 path = read_match.group(1).strip()
                 result = SystemController.read_file(path)
-                messages.append({"role": "system", "content": f"ACTION OUTPUT:\n{result}"})
+                messages.append({"role": "system", "content": f"Action: read_file\nPath: {path}\nOutput:\n{result}"})
                 actions_taken.append(ActionInfo(tool="read_file", input=path, output=result))
                 tool_executed = True
 
+            # Check for <write_file>
             write_match = re.search(r"<write_file path=\"(.*?)\">(.*?)</write_file>", raw_reply, re.DOTALL)
             if write_match:
                 path = write_match.group(1).strip()
                 content = write_match.group(2).strip()
                 result = SystemController.write_file(path, content)
-                messages.append({"role": "system", "content": f"ACTION OUTPUT:\n{result}"})
+                messages.append({"role": "system", "content": f"Action: write_file\nPath: {path}\nStatus: {result}"})
                 actions_taken.append(ActionInfo(tool="write_file", input=path, output=result))
                 tool_executed = True
                 
+            # Check for <list_dir>
             list_match = re.search(r"<list_dir>(.*?)</list_dir>", raw_reply, re.DOTALL)
             if list_match:
                 path = list_match.group(1).strip()
                 result = SystemController.list_dir(path)
-                messages.append({"role": "system", "content": f"ACTION OUTPUT:\n{result}"})
+                messages.append({"role": "system", "content": f"Action: list_dir\nPath: {path}\nOutput:\n{result}"})
                 actions_taken.append(ActionInfo(tool="list_dir", input=path, output=result))
                 tool_executed = True
 
@@ -294,51 +258,31 @@ async def chat_command(req: ChatRequest):
                 break
             
             current_turn += 1
+            if current_turn == max_turns:
+                final_reply = raw_reply + "\n\n[System Note: Maximum tool-use turns reached.]"
 
-        # Persistence
+        # Save Final System Reply to SQLite
         c.execute("INSERT INTO messages (role, content, project_scope) VALUES (?, ?, ?)", 
                   ("assistant", final_reply, req.project_scope))
         conn.commit()
         
+        # Save Interaction to ChromaDB for Long-term Vector Recall
         try:
+            interaction_text = f"User: {req.message}\nAssistant: {final_reply}"
             memory_collection.add(
-                documents=[f"User: {req.message}\nAssistant: {final_reply}"],
-                ids=[f"msg_{os.getpid()}_{id(req)}"]
+                documents=[interaction_text],
+                ids=[f"msg_{int(os.getpid())}_{int(id(req))}"] # Unique-ish ID for this run
             )
-        except Exception: pass
+        except Exception as e:
+            print(f"ChromaDB Storage Error: {e}")
         
         return {"response": final_reply, "actions": actions_taken, "status": "success"}
 
     except Exception as e:
-        return {"response": f"Core Failure: {str(e)}", "status": "error"}
+        return {"response": f"Execution Failure: {str(e)}", "status": "error"}
     finally:
         conn.close()
 
 if __name__ == "__main__":
     import uvicorn
-    import subprocess
-    import time
-    
-    # --- Auto-Start Dashboard ---
-    # We automatically trigger the Next.js frontend to ensure the "Control Center" is ready.
-    DASHBOARD_PATH = "/Users/therealityarchitect/Project_Nexus_Mac/nexus-dashboard"
-    try:
-        # Check if dashboard is already listening on 3000
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex(('127.0.0.1', 3000))
-        if result != 0:
-            print("[System]: Dashboard not detected on port 3000. Launching Command Center...")
-            subprocess.Popen(
-                ["npm", "run", "dev"], 
-                cwd=DASHBOARD_PATH, 
-                stdout=subprocess.DEVNULL, 
-                stderr=subprocess.DEVNULL
-            )
-        else:
-            print("[System]: Dashboard is already active on port 3000.")
-        sock.close()
-    except Exception as e:
-        print(f"[Warning]: Failed to auto-launch dashboard: {e}")
-
     uvicorn.run(app, host="127.0.0.1", port=8080)

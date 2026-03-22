@@ -10,7 +10,7 @@ set -e
 
 # --- Configuration ---
 SSD_BASE="/Volumes/PortableSSD/Project_Nexus"
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="/Users/therealityarchitect/Project_Nexus_Mac"
 BACKEND_DIR="$PROJECT_DIR/backend"
 FRONTEND_DIR="$PROJECT_DIR/nexus-dashboard"
 PYTHON_BIN="$PROJECT_DIR/miniconda3/bin/python3"
