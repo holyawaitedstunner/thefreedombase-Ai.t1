@@ -1,0 +1,29 @@
+# Global ignores
+.DS_Store
+*.log
+*.tmp
+.env
+.env.local
+
+# Backend ignores
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/.venv/
+backend/venv/
+backend/*.sqlite
+backend/chroma/
+backend/data/
+backend/models/
+*.gguf
+
+# Frontend ignores
+nexus-dashboard/node_modules/
+nexus-dashboard/.next/
+nexus-dashboard/out/
+nexus-dashboard/*.tsbuildinfo
+nexus-dashboard/.env*.local
+
+# SSD specific (from README)
+Volumes/
+Project_Nexus/
